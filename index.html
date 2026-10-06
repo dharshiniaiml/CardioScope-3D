@@ -1,0 +1,222 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardioScope 3D</title>
+<style>
+:root{--bg:#0b0f17;--panel:#131a26;--line:#233049;--tx:#e6ebf5;--mut:#8b98b3;--acc:#4da3ff;--good:#3ecf8e;--warn:#f2b84b;--bad:#ef4b5f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,Segoe UI,Roboto,sans-serif}
+header{padding:10px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+header h1{font-size:18px;margin:0}header span{color:var(--mut);font-size:12px}
+.presets{margin-left:auto;display:flex;gap:6px}
+button{background:#1b2638;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px}
+button:hover{border-color:var(--acc)}
+main{display:grid;grid-template-columns:280px 1fr 340px;gap:12px;padding:12px;height:calc(100vh - 56px)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:14px 0 8px}h2:first-child{margin-top:0}
+.row{margin-bottom:9px}.row label{display:flex;justify-content:space-between;font-size:12px;color:var(--mut)}
+.row label b{color:var(--tx)}input[type=range]{width:100%;accent-color:var(--acc)}
+.tg{display:flex;gap:6px;flex-wrap:wrap}.tg label{display:flex;gap:5px;align-items:center;background:#1b2638;border:1px solid var(--line);padding:4px 8px;border-radius:6px;font-size:12px;color:var(--tx);cursor:pointer}
+#view{position:relative;padding:0;overflow:hidden}
+#view canvas{display:block}
+.lbl{position:absolute;pointer-events:none;font-size:12px;font-weight:600;padding:2px 6px;border-radius:4px;background:#0b0f17cc;border:1px solid var(--line);transform:translate(-50%,-50%)}
+.hint{position:absolute;left:12px;bottom:10px;color:var(--mut);font-size:11px}
+.big{font-size:44px;font-weight:700;line-height:1}.cat{font-size:12px;padding:2px 8px;border-radius:99px;margin-left:8px;vertical-align:middle}
+.vcards{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.vc{background:#1b2638;border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer;text-align:center}
+.vc.sel{border-color:var(--acc)}.vc b{display:block;font-size:18px}.vc small{color:var(--mut)}
+.bar{display:grid;grid-template-columns:92px 1fr 46px;gap:6px;align-items:center;font-size:12px;margin-bottom:4px}
+.bar .t{height:10px;background:#1b2638;border-radius:3px;position:relative}.bar .t i{position:absolute;top:0;height:100%;border-radius:3px}.bar .t u{position:absolute;left:50%;top:-2px;width:1px;height:14px;background:var(--mut)}
+.bar em{font-style:normal;text-align:right;color:var(--mut)}
+.wi{display:flex;justify-content:space-between;align-items:center;background:#1b2638;border-radius:6px;padding:6px 8px;margin-bottom:5px;font-size:12px}
+.wi b{color:var(--good)}canvas#traj{width:100%;height:150px;background:#0f1520;border-radius:8px}
+.leg{font-size:11px;color:var(--mut);margin-top:4px}.leg i{display:inline-block;width:10px;height:3px;margin:0 4px 2px 8px}
+.disc{font-size:11px;color:var(--mut);border-top:1px solid var(--line);margin-top:12px;padding-top:8px}
+@media(max-width:1000px){main{grid-template-columns:1fr;height:auto}#view{height:60vh}}
+</style>
+</head>
+<body>
+<header>
+  <h1>CardioScope 3D</h1><span>Explainable coronary risk on an interactive anatomical model</span>
+  <div class="presets">
+    <button data-p="healthy">Healthy 35F</button><button data-p="mid">Midlife 55M</button><button data-p="high">High-risk 64M</button>
+  </div>
+</header>
+<main>
+  <section class="panel" id="inputs"></section>
+  <section class="panel" id="view"><div class="hint">Drag to rotate Â· scroll to zoom Â· click an artery</div></section>
+  <section class="panel" id="out">
+    <h2>Overall 10-year cardiac risk</h2>
+    <div><span class="big" id="overall">â€“</span><span class="cat" id="cat"></span></div>
+    <div class="vcards" id="vcards"></div>
+    <h2 id="whyT">Why this score</h2><div id="why"></div>
+    <h2>What-if: single changes</h2><div id="whatif"></div>
+    <h2>10-year trajectory</h2><canvas id="traj" width="620" height="300"></canvas>
+    <div class="leg"><i style="background:#ef4b5f"></i>current habits<i style="background:#3ecf8e"></i>risk factors optimised</div>
+    <div class="disc">Prototype decision-support only, not a diagnosis. Coefficients are illustrative Framingham-style priors, to be replaced by a model trained on UCI/PTB-XL data and validated before any clinical use.</div>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/* ---------------- Risk model (additive log-odds => exact per-feature attribution) ---------------- */
+const FEATS = [
+  {k:'age',  n:'Age',            u:'yrs',   min:25,max:85, step:1, ref:50, w:.06,  mode:'raw'},
+  {k:'sbp',  n:'Systolic BP',    u:'mmHg',  min:90,max:200,step:1, ref:120,w:.012, mode:'pos'},
+  {k:'ldl',  n:'LDL cholesterol',u:'mg/dL', min:50,max:220,step:1, ref:100,w:.008, mode:'pos'},
+  {k:'hdl',  n:'HDL cholesterol',u:'mg/dL', min:20,max:90, step:1, ref:50, w:-.02, mode:'raw'},
+  {k:'bmi',  n:'BMI',            u:'',      min:17,max:45, step:.5,ref:25, w:.04,  mode:'pos'},
+  {k:'st',   n:'ST depression',  u:'mm',    min:0, max:4,  step:.1,ref:0,  w:.5,   mode:'pos'},
+];
+const FLAGS = [
+  {k:'male',n:'Male sex',w:.5},{k:'smoker',n:'Smoker',w:.7},{k:'diabetes',n:'Diabetes',w:.75},
+  {k:'famhx',n:'Family history',w:.4},{k:'exang',n:'Exercise angina',w:.6},
+];
+const VESSELS = {
+  LAD:{name:'LAD',full:'Left anterior descending',off:-4.0,m:{age:1.1,sbp:1.2,ldl:1.2,st:1.3}},
+  LCx:{name:'LCx',full:'Left circumflex',off:-4.2,m:{diabetes:1.4,bmi:1.4,age:.9,exang:1.2}},
+  RCA:{name:'RCA',full:'Right coronary artery',off:-4.1,m:{smoker:1.4,male:1.3,hdl:1.3,famhx:1.2}},
+};
+const ALL = [...FEATS,...FLAGS];
+const LBL = Object.fromEntries(ALL.map(f=>[f.k,f.n]));
+const sig = z=>1/(1+Math.exp(-z));
+function delta(f,x){const v=x[f.k]; if(f.mode==='pos') return Math.max(v-f.ref,0); if(f.mode==='raw') return v-f.ref; return v;}
+function contrib(v,x){const o={}; for(const f of ALL){o[f.k]=.6*f.w*(VESSELS[v].m[f.k]||1)*delta(f,x);} return o;}
+function vesselRisk(v,x){const c=contrib(v,x);return sig(VESSELS[v].off+Object.values(c).reduce((a,b)=>a+b,0));}
+function risks(x){const r={};let s=1;for(const v in VESSELS){r[v]=vesselRisk(v,x);s*=1-r[v];}r.all=1-s;return r;}
+function overallContrib(x){ // risk-weighted blend of vessel attributions
+  const o={},tot={};let W=0;for(const v in VESSELS){const p=vesselRisk(v,x),c=contrib(v,x);W+=p;for(const k in c)o[k]=(o[k]||0)+p*c[k];}
+  for(const k in o)o[k]/=W;return o;}
+
+const PRESETS={
+  healthy:{age:35,sbp:112,ldl:88,hdl:62,bmi:22,st:0,male:0,smoker:0,diabetes:0,famhx:0,exang:0},
+  mid:{age:55,sbp:138,ldl:135,hdl:44,bmi:28,st:.5,male:1,smoker:0,diabetes:0,famhx:1,exang:0},
+  high:{age:64,sbp:158,ldl:165,hdl:36,bmi:32,st:1.8,male:1,smoker:1,diabetes:1,famhx:1,exang:1},
+};
+let X={...PRESETS.mid}, selected=null;
+
+/* ---------------- Inputs UI ---------------- */
+const inp=document.getElementById('inputs');
+inp.innerHTML='<h2>Patient data</h2>'+FEATS.map(f=>`<div class="row"><label>${f.n}<b id="v_${f.k}"></b></label><input type="range" id="r_${f.k}" min="${f.min}" max="${f.max}" step="${f.step}"></div>`).join('')+
+ '<h2>Clinical flags</h2><div class="tg">'+FLAGS.map(f=>`<label><input type="checkbox" id="c_${f.k}">${f.n}</label>`).join('')+'</div>';
+FEATS.forEach(f=>document.getElementById('r_'+f.k).oninput=e=>{X[f.k]=+e.target.value;update();});
+FLAGS.forEach(f=>document.getElementById('c_'+f.k).onchange=e=>{X[f.k]=e.target.checked?1:0;update();});
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{X={...PRESETS[b.dataset.p]};update();});
+function syncInputs(){FEATS.forEach(f=>{document.getElementById('r_'+f.k).value=X[f.k];document.getElementById('v_'+f.k).textContent=X[f.k]+' '+f.u;});FLAGS.forEach(f=>document.getElementById('c_'+f.k).checked=!!X[f.k]);}
+
+/* ---------------- 3D scene ---------------- */
+const view=document.getElementById('view');
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(40,1,.1,500);camera.position.set(0,-2,52);
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(devicePixelRatio);view.appendChild(renderer.domElement);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.target.set(0,-2,0);
+scene.add(new THREE.HemisphereLight(0xffffff,0x223355,.9));
+const dl=new THREE.DirectionalLight(0xffffff,.9);dl.position.set(20,30,40);scene.add(dl);
+const heart=new THREE.Group();scene.add(heart);
+
+function S(t,s,off=0){ // heart surface point
+  const sx=Math.sin(s);
+  const X_=16*Math.pow(Math.sin(t),3)*sx;
+  const Y_=(13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t))*sx;
+  const Z_=9*Math.cos(s);
+  const p=new THREE.Vector3(X_,Y_,Z_);
+  if(off){p.add(p.clone().sub(new THREE.Vector3(0,-2,0)).normalize().multiplyScalar(off));}
+  return p;
+}
+(function buildHeart(){
+  const nt=96,ns=48,pos=[],idx=[];
+  for(let j=0;j<=ns;j++)for(let i=0;i<=nt;i++){const p=S(i/nt*Math.PI*2,j/ns*Math.PI);pos.push(p.x,p.y,p.z);}
+  for(let j=0;j<ns;j++)for(let i=0;i<nt;i++){const a=j*(nt+1)+i,b=a+nt+1;idx.push(a,b,a+1,b,b+1,a+1);}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(idx);g.computeVertexNormals();
+  heart.add(new THREE.Mesh(g,new THREE.MeshPhysicalMaterial({color:0x8e2a3a,roughness:.55,clearcoat:.4,side:THREE.DoubleSide,transparent:true,opacity:.9})));
+  const ao=new THREE.Mesh(new THREE.CylinderGeometry(2.6,3.1,9,24),new THREE.MeshPhysicalMaterial({color:0xb04a58,roughness:.5}));
+  ao.position.set(-2,10,-1);ao.rotation.z=.25;heart.add(ao);
+})();
+heart.rotation.z=.22;heart.position.y=2;
+
+const ART={ // (t,s) waypoints on the surface
+  LAD:{pts:[[.25,.55],[.7,.5],[1.3,.5],[1.9,.5],[2.5,.46],[3.0,.4]],r:.5},
+  LCx:{pts:[[.6,.75],[.95,1.15],[1.05,1.5],[1.2,1.85],[1.5,2.1]],r:.42},
+  RCA:{pts:[[5.9,.6],[5.4,.95],[4.9,1.0],[4.4,.95],[3.8,.8],[3.45,.6]],r:.46},
+};
+const artMeshes=[],plaques={},labels={};
+for(const v in ART){
+  const curve=new THREE.CatmullRomCurve3(ART[v].pts.map(([t,s])=>S(t,s,.35)));
+  const m=new THREE.Mesh(new THREE.TubeGeometry(curve,80,ART[v].r,12),new THREE.MeshStandardMaterial({color:0x3ecf8e,roughness:.4,emissive:0x000000}));
+  m.userData.vessel=v;heart.add(m);artMeshes.push(m);ART[v].curve=curve;ART[v].mesh=m;
+  plaques[v]=[.18,.32,.46,.6,.74,.88].map(f=>{const b=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshStandardMaterial({color:0xf4efe2,roughness:.7}));b.position.copy(curve.getPoint(f));heart.add(b);return b;});
+  const d=document.createElement('div');d.className='lbl';d.textContent=v;view.appendChild(d);labels[v]=d;
+}
+function riskColor(r){const h=120*(1-Math.min(r/.35,1))/360;return new THREE.Color().setHSL(h,.75,.5);}
+function riskCss(r){return `hsl(${120*(1-Math.min(r/.35,1))},75%,52%)`;}
+
+function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+addEventListener('resize',resize);resize();
+
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>down=[e.clientX,e.clientY]);
+renderer.domElement.addEventListener('pointerup',e=>{
+  if(!down||Math.hypot(e.clientX-down[0],e.clientY-down[1])>4)return;
+  const r=renderer.domElement.getBoundingClientRect();mouse.set((e.clientX-r.left)/r.width*2-1,-((e.clientY-r.top)/r.height)*2+1);
+  ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(artMeshes)[0];
+  selected=hit?hit.object.userData.vessel:null;update();});
+
+const tmp=new THREE.Vector3();
+function animate(t){requestAnimationFrame(animate);
+  const beat=1+.035*Math.pow(Math.max(0,Math.sin(t/1000*Math.PI*2*1.15)),3);heart.scale.setScalar(.9*beat);
+  controls.update();renderer.render(scene,camera);
+  const w=view.clientWidth,h=view.clientHeight;
+  for(const v in ART){heart.localToWorld(tmp.copy(ART[v].curve.getPoint(.5)).add(new THREE.Vector3(0,0,1.5)));tmp.project(camera);
+    labels[v].style.left=(tmp.x*.5+.5)*w+'px';labels[v].style.top=(-tmp.y*.5+.5)*h+'px';labels[v].style.display=tmp.z<1?'block':'none';}
+}
+requestAnimationFrame(animate);
+
+/* ---------------- Output UI ---------------- */
+function catOf(r){return r<.10?['Low','#3ecf8e22','#3ecf8e']:r<.20?['Moderate','#f2b84b22','#f2b84b']:r<.40?['High','#ff8a3d22','#ff8a3d']:['Very high','#ef4b5f22','#ef4b5f'];}
+const pct=r=>(r*100).toFixed(r<.1?1:0)+'%';
+function update(){
+  syncInputs();
+  const r=risks(X);
+  const ov=document.getElementById('overall');ov.textContent=pct(r.all);ov.style.color=riskCss(r.all);
+  const [cn,bg,fg]=catOf(r.all);const c=document.getElementById('cat');c.textContent=cn;c.style.background=bg;c.style.color=fg;
+  document.getElementById('vcards').innerHTML=Object.keys(VESSELS).map(v=>`<div class="vc ${selected===v?'sel':''}" data-v="${v}"><small>${v}</small><b style="color:${riskCss(r[v])}">${pct(r[v])}</b></div>`).join('');
+  document.querySelectorAll('.vc').forEach(e=>e.onclick=()=>{selected=selected===e.dataset.v?null:e.dataset.v;update();});
+  // 3D colouring, plaque, highlight
+  for(const v in ART){const m=ART[v].mesh;m.material.color.copy(riskColor(r[v]));
+    m.material.emissive.setHex(selected===v?0x335577:0);m.scale.setScalar(selected===v?1.25:1);
+    const n=Math.round(r[v]*18);plaques[v].forEach((b,i)=>{b.visible=i<n;b.scale.setScalar(.45+Math.min(r[v],.6)*1.4);});
+    labels[v].style.borderColor=selected===v?'#4da3ff':'';labels[v].style.color=riskCss(r[v]);}
+  // explanation
+  const cs=selected?contrib(selected,X):overallContrib(X);
+  document.getElementById('whyT').textContent=selected?`Why ${VESSELS[selected].name} (${VESSELS[selected].full}) is ${pct(r[selected])}`:'Why this score (log-odds drivers)';
+  const rows=Object.entries(cs).filter(([k,v])=>Math.abs(v)>.01).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,7);
+  const mx=Math.max(.3,...rows.map(r=>Math.abs(r[1])));
+  document.getElementById('why').innerHTML=rows.length?rows.map(([k,v])=>{const w=Math.abs(v)/mx*50;
+    return `<div class="bar"><span>${LBL[k]}</span><div class="t"><u></u><i style="${v>=0?'left:50%;background:#ef4b5f':'right:50%;background:#3ecf8e'};width:${w}%"></i></div><em>${v>=0?'+':''}${v.toFixed(2)}</em></div>`;}).join(''):'<span style="color:var(--mut)">All factors at reference values.</span>';
+  // what-if
+  const opts=[['Quit smoking',x=>x.smoker&&{smoker:0}],['LDL to 100',x=>x.ldl>100&&{ldl:100}],['BP to 120',x=>x.sbp>120&&{sbp:120}],['BMI to 25',x=>x.bmi>25&&{bmi:25}],['HDL to 50',x=>x.hdl<50&&{hdl:50}]]
+    .map(([n,f])=>{const ch=f(X);if(!ch)return null;const d=r.all-risks({...X,...ch}).all;return {n,ch,d};}).filter(Boolean).sort((a,b)=>b.d-a.d);
+  const wi=document.getElementById('whatif');
+  wi.innerHTML=opts.length?opts.map((o,i)=>`<div class="wi"><span>${o.n}</span><span><b>âˆ’${(o.d*100).toFixed(1)} pts</b> <button data-i="${i}">apply</button></span></div>`).join(''):'<span style="color:var(--mut)">No modifiable risk factors above target.</span>';
+  wi.querySelectorAll('button').forEach(b=>b.onclick=()=>{Object.assign(X,opts[b.dataset.i].ch);update();});
+  drawTraj();
+}
+function optimised(x){return {...x,smoker:0,ldl:Math.min(x.ldl,100),sbp:Math.min(x.sbp,120),bmi:Math.min(x.bmi,25),hdl:Math.max(x.hdl,50)};}
+function drawTraj(){
+  const cv=document.getElementById('traj'),g=cv.getContext('2d'),W=cv.width,H=cv.height,P=34;g.clearRect(0,0,W,H);
+  const cur=[],opt=[];for(let t=0;t<=10;t++){cur.push(risks({...X,age:X.age+t}).all);opt.push(risks({...optimised(X),age:X.age+t}).all);}
+  const mx=Math.max(.1,Math.ceil(Math.max(...cur)*10)/10);
+  const px=t=>P+t/10*(W-P-10),py=r=>H-P-r/mx*(H-P-14);
+  g.strokeStyle='#233049';g.fillStyle='#8b98b3';g.font='18px system-ui';g.lineWidth=1;
+  for(let i=0;i<=4;i++){const r=mx*i/4,y=py(r);g.beginPath();g.moveTo(P,y);g.lineTo(W-10,y);g.stroke();g.fillText(Math.round(r*100)+'%',2,y+5);}
+  [0,5,10].forEach(t=>g.fillText('+'+t+'y',px(t)-14,H-8));
+  [[cur,'#ef4b5f'],[opt,'#3ecf8e']].forEach(([a,c])=>{g.strokeStyle=c;g.lineWidth=3;g.beginPath();a.forEach((r,t)=>t?g.lineTo(px(t),py(r)):g.moveTo(px(t),py(r)));g.stroke();});
+}
+update();
+</script>
+</body>
+</html>
+
+
